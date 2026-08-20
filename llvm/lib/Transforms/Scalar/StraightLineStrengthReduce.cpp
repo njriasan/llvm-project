@@ -83,6 +83,7 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
@@ -1362,8 +1363,59 @@ bool StraightLineStrengthReduceLegacyPass::runOnFunction(Function &F) {
   return StraightLineStrengthReduce(DL, DT, SE, TTI).runOnFunction(F);
 }
 
+/// SLSR models "Base | Index" as "Base + Index" whenever the operands are
+/// disjoint, and so does SCEV for `or disjoint`. That equality holds only
+/// because of the `disjoint` flag, or of some other flag feeding
+/// haveNoCommonBitsSet() -- and rewriting a candidate drops exactly those
+/// annotations from the instructions it reuses. Once they are gone the `or` no
+/// longer computes the add that SCEV believes it computes.
+///
+/// Rather than trying to find a disjointness proof that survives the drops,
+/// bake the equality into the opcode up front. Replacing `or` with `add` is a
+/// refinement whenever the operands are disjoint under the flags present right
+/// now: if they really are disjoint the two compute the same value, and
+/// otherwise the `or` was poison, which `add` refines. Afterwards the SCEV of
+/// the instruction is valid unconditionally and no later flag drop can
+/// invalidate it.
+///
+/// Only `or`s feeding a `mul` are converted, since that is where SLSR relies on
+/// the equality.
+static bool rewriteDisjointOrsFeedingMulsAsAdds(Function &F,
+                                                ScalarEvolution &SE,
+                                                const DataLayout &DL) {
+  SmallSetVector<BinaryOperator *, 8> Worklist;
+  for (Instruction &I : instructions(F)) {
+    if (I.getOpcode() != Instruction::Mul || !isa<IntegerType>(I.getType()))
+      continue;
+    for (Value *Op : I.operands()) {
+      auto *Or = dyn_cast<BinaryOperator>(Op);
+      if (!Or || Or->getOpcode() != Instruction::Or)
+        continue;
+      // Mirror matchesOr(): SLSR only ever splits an `or` with a constant.
+      if (!match(Or, m_c_Or(m_Value(), m_ConstantInt())))
+        continue;
+      if (cast<PossiblyDisjointInst>(Or)->isDisjoint() ||
+          haveNoCommonBitsSet(Or->getOperand(0), Or->getOperand(1), DL))
+        Worklist.insert(Or);
+    }
+  }
+
+  for (BinaryOperator *Or : Worklist) {
+    auto *Add = BinaryOperator::CreateAdd(Or->getOperand(0), Or->getOperand(1));
+    Add->setDebugLoc(Or->getDebugLoc());
+    Add->insertBefore(Or->getIterator());
+    Add->takeName(Or);
+    Or->replaceAllUsesWith(Add);
+    SE.forgetValue(Or);
+    Or->eraseFromParent();
+  }
+  return !Worklist.empty();
+}
+
 bool StraightLineStrengthReduce::runOnFunction(Function &F) {
   LLVM_DEBUG(dbgs() << "SLSR on Function: " << F.getName() << "\n");
+  bool Changed = rewriteDisjointOrsFeedingMulsAsAdds(F, *SE, *DL);
+
   // Traverse the dominator tree in the depth-first order. This order makes sure
   // all bases of a candidate are in Candidates when we process it.
   for (const auto Node : depth_first(DT))
@@ -1390,7 +1442,7 @@ bool StraightLineStrengthReduce::runOnFunction(Function &F) {
     if (DeadIns->getParent())
       RecursivelyDeleteTriviallyDeadInstructions(DeadIns);
 
-  bool Ret = !DeadInstructions.empty();
+  bool Ret = Changed || !DeadInstructions.empty();
   DeadInstructions.clear();
   DependencyGraph.clear();
   RewriteCandidates.clear();
