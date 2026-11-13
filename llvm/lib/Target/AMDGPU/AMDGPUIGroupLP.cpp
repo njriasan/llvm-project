@@ -2786,6 +2786,30 @@ void IGroupLPDAGMutation::apply(ScheduleDAGInstrs *DAGInstrs) {
     }
   }
 
+  if (FoundIGLP && ShouldApplyIGLP && Phase == SchedulingPhase::PostRA) {
+    const SIMachineFunctionInfo *MFI =
+        DAGInstrs->MF.getInfo<SIMachineFunctionInfo>();
+    unsigned Budget = ST.getMaxNumVGPRs(MFI->getOccupancy(),
+                                        MFI->getDynamicVGPRBlockSize());
+    DenseSet<Register> Seen;
+    unsigned VGPRDefs = 0;
+    for (const SUnit &SU : DAGInstrs->SUnits) {
+      if (!SU.isInstr())
+        continue;
+      for (const MachineOperand &MO : SU.getInstr()->defs()) {
+        if (!MO.isReg() || !MO.getReg().isVirtual() ||
+            !Seen.insert(MO.getReg()).second)
+          continue;
+        const TargetRegisterClass *RC =
+            DAGInstrs->MRI.getRegClass(MO.getReg());
+        if (RC && ST.getRegisterInfo()->isVGPRClass(RC))
+          VGPRDefs += ST.getRegisterInfo()->getRegSizeInBits(*RC) / 32;
+      }
+    }
+    if (VGPRDefs > Budget)
+      ShouldApplyIGLP = false;
+  }
+
   if (FoundSB || (FoundIGLP && ShouldApplyIGLP)) {
     PipelineSolver PS(SyncedSchedGroups, SyncedInstrs, DAG, IsBottomUp);
     // PipelineSolver performs the mutation by adding the edges it
