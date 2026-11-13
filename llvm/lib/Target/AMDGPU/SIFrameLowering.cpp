@@ -871,11 +871,12 @@ void SIFrameLowering::emitEntryFunctionPrologue(MachineFunction &MF,
     assert(hasFP(MF));
     Register FPReg = MFI->getFrameOffsetReg();
     assert(FPReg != AMDGPU::FP_REG);
+    unsigned NumVGPRs = ST.getMaxNumVGPRs(MFI->getOccupancy(),
+                                          MFI->getDynamicVGPRBlockSize());
+    unsigned Granule = AMDGPU::IsaInfo::getVGPRAllocGranule(
+        ST, MFI->getDynamicVGPRBlockSize());
     unsigned VGPRSize = llvm::alignTo(
-        (ST.getAddressableNumVGPRs(MFI->getDynamicVGPRBlockSize()) -
-         AMDGPU::IsaInfo::getVGPRAllocGranule(ST,
-                                              MFI->getDynamicVGPRBlockSize())) *
-            4,
+        (NumVGPRs > Granule ? NumVGPRs - Granule : 0) * 4,
         FrameInfo.getMaxAlign());
     MFI->setScratchReservedForDynamicVGPRs(VGPRSize);
 
