@@ -190,8 +190,7 @@ bool SIFormMemoryClausesImpl::checkPressure(const MachineInstr &MI,
       *ST,
       MI.getMF()->getInfo<SIMachineFunctionInfo>()->getDynamicVGPRBlockSize());
 
-  // Don't push over half the register budget. We don't want to introduce
-  // spilling just to form a soft clause.
+  // Avoid introducing spilling just to form a soft clause.
   //
   // FIXME: This pressure check is fundamentally broken. First, this is checking
   // the global pressure, not the pressure at this specific point in the
@@ -199,8 +198,13 @@ bool SIFormMemoryClausesImpl::checkPressure(const MachineInstr &MI,
   // operands due to the early clobber we will introduce. Third, the pressure
   // tracking does not account for the alignment requirements for SGPRs, or the
   // fragmentation of registers the allocator will need to satisfy.
+  unsigned MaxClauseVGPRs = MaxVGPRs / 2;
+  if (!ST->hasGFX90AInsts())
+    MaxClauseVGPRs = std::max(
+        MaxClauseVGPRs, ST->getMaxNumVGPRs(MFI->getOccupancy(),
+                                           MFI->getDynamicVGPRBlockSize()));
   if (Occupancy >= MFI->getMinAllowedOccupancy() &&
-      MaxPressure.getVGPRNum(ST->hasGFX90AInsts()) <= MaxVGPRs / 2 &&
+      MaxPressure.getVGPRNum(ST->hasGFX90AInsts()) <= MaxClauseVGPRs &&
       MaxPressure.getSGPRNum() <= MaxSGPRs / 2) {
     LastRecordedOccupancy = Occupancy;
     return true;
