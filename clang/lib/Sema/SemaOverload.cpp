@@ -13425,7 +13425,7 @@ private:
       auto LS = L.IgnoreObjectArgument && I == 0
                     ? ConversionSignals::ForObjectArgument()
                     : ConversionSignals::ForSequence(L.Conversions[I]);
-      auto RS = R.IgnoreObjectArgument
+      auto RS = R.IgnoreObjectArgument && I == 0
                     ? ConversionSignals::ForObjectArgument()
                     : ConversionSignals::ForSequence(R.Conversions[I]);
       if (std::tie(LS.KindRank, LS.Rank) != std::tie(RS.KindRank, RS.Rank))
