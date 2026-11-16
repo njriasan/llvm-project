@@ -820,6 +820,10 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
   (#GH227392)
 - Clang will now no longer assert or miscompile on a constructor that has more than 65535 base and member initializers. (#GH219366)
 
+- Non-viable candidates for a call without an object argument, such as
+  `S::f(...)` naming static member functions, are now ordered by the quality of
+  their argument conversions, as candidates for free functions already were.
+
 ### Improvements to Clang's time-trace
 
 ### Improvements to Coverage Mapping
