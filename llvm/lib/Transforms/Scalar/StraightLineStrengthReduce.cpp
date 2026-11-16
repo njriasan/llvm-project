@@ -1096,8 +1096,15 @@ void StraightLineStrengthReduce::allocateCandidatesAndFindBasis(
   // doing this early we avoid calling canReuseInstruction repeatedly for the
   // same instruction. The DropList is stored on the Candidate so the flags can
   // be dropped only if this candidate is used by an executed rewrite.
+  const SCEV *CandidateExpr = SE->getSCEV(I);
+  if (CT == Candidate::Mul)
+    CandidateExpr =
+        SE->getMulExpr(SE->getAddExpr(B, SE->getSCEV(Idx)), C.StrideSCEV);
+  // SCEV may leave an OR opaque that we decomposed as an add. Its poison check
+  // then does not account for the operands of the modeled expression.
   if (!Opts.enable_poison_reuse_guard ||
-      SE->canReuseInstruction(SE->getSCEV(I), I, Candidates.back().DropList)) {
+      (CandidateExpr == SE->getSCEV(I) &&
+       SE->canReuseInstruction(CandidateExpr, I, Candidates.back().DropList))) {
     CandidateDict.add(Candidates.back());
   }
 }
