@@ -110,6 +110,23 @@ namespace static_vs_nonstatic {
     void g(){
       A::f(0);
     }
+
+    struct B {
+      template <class... Args>
+        static void f(int, Args... args) {}
+      template <class... Args>
+        void f(this B &, Args... args) = delete;
+    };
+    struct C {
+      template <class... Args>
+        void f(this C &, Args... args) = delete;
+      template <class... Args>
+        static void f(int, Args... args) {}
+    };
+    void h(B b, C c) {
+      b.f(0);
+      c.f(0);
+    }
   } // namespace explicit_obj_param
 } // namespace static_vs_nonstatic
 
