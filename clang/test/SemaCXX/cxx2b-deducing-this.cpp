@@ -1484,3 +1484,37 @@ void foo() {
 }
 
 }
+
+namespace GH186565 {
+struct S {
+  template <class... args> static void f() {}
+  template <class... args> void f(this S *, ...) {}
+};
+
+void g() { S::f(0); } // expected-error {{call to non-static member function without an object argument}}
+
+struct T {
+  template <class U = int> void g(this T, int *); // expected-note {{candidate function template not viable: no known conversion from 'int' to 'int *' for 2nd argument}}
+  static void g(int *); // expected-note {{candidate function not viable: no known conversion from 'int' to 'int *' for 1st argument}}
+
+  template <class Self> void h(this Self, int *); // expected-note {{candidate template ignored: couldn't infer template argument 'Self'}}
+  static void h(int *); // expected-note {{candidate function not viable: no known conversion from 'int' to 'int *' for 1st argument}}
+
+  void i(this T, int);
+  static void i(long *);
+
+  template <class U> void j(this T, U);
+  static void j(long *);
+};
+
+void test(T t) {
+  T::g(1); // expected-error {{no matching function for call to 'g'}}
+  T::h(1); // expected-error {{no matching function for call to 'h'}}
+  T::i(0); // expected-error {{call to non-static member function without an object argument}}
+  T::j(0); // expected-error {{call to non-static member function without an object argument}}
+  T::i(nullptr);
+  T::j((long *)nullptr);
+  (&T::i)(t, 0);
+  (&T::j)(t, 0);
+}
+}

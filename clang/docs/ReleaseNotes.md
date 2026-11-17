@@ -1232,6 +1232,13 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
   explicit object member function template, which reported calls such as
   `a.f(0)` as ambiguous when the static template was more specialized.
 
+- Fixed a crash when diagnosing a call without an object argument, such as
+  `S::f(...)`, whose candidates include an explicit object member function
+  template. Such a template is now deduced from the remaining arguments, like
+  an explicit object member function that is not a template, and a call that
+  selects an explicit object member function without an object argument is
+  now rejected instead of being accepted. (#GH186565)
+
 #### Bug Fixes to AST Handling
 
 - Fixed a non-deterministic ordering of unused local typedefs that made
