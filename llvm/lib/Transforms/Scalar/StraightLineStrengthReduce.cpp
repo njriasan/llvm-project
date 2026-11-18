@@ -72,6 +72,7 @@
 #include "ScalarOptions.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DepthFirstIterator.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -86,6 +87,7 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
@@ -117,6 +119,8 @@ static const unsigned UnknownAddressSpace =
 
 DEBUG_COUNTER(StraightLineStrengthReduceCounter, "slsr-counter",
               "Controls whether rewriteCandidate is executed.");
+DEBUG_COUNTER(SLSROrNormalizeCounter, "slsr-or-normalize",
+              "Controls whether a disjoint OR multiply operand is normalized.");
 
 STATISTIC(NumSCEVCandidateBasisDifferences,
           "Number of candidate-basis SCEV differences computed by SLSR");
@@ -367,6 +371,8 @@ public:
   bool runOnFunction(Function &F);
 
 private:
+  bool normalizeMulOperands(Function &F);
+
   // Fetch straight-line basis for rewriting C, update C.Basis to point to it,
   // and store the delta between C and its Basis in C.Delta.
   void setBasisAndDeltaFor(Candidate &C);
@@ -1155,11 +1161,6 @@ static bool matchesAdd(Value *A, Value *&B, ConstantInt *&C) {
   return match(A, m_c_Add(m_Value(B), m_ConstantInt(C)));
 }
 
-// Returns true if A matches B | C where C is constant.
-static bool matchesOr(Value *A, Value *&B, ConstantInt *&C) {
-  return match(A, m_c_Or(m_Value(B), m_ConstantInt(C)));
-}
-
 void StraightLineStrengthReduce::allocateCandidatesAndFindBasisForMul(
     Value *LHS, Value *RHS, Instruction *I) {
   Value *B = nullptr;
@@ -1167,12 +1168,6 @@ void StraightLineStrengthReduce::allocateCandidatesAndFindBasisForMul(
   if (matchesAdd(LHS, B, Idx)) {
     // If LHS is in the form of "Base + Index", then I is in the form of
     // "(Base + Index) * RHS".
-    allocateCandidatesAndFindBasis(Candidate::Mul, SE->getSCEV(B), Idx, RHS, I);
-  } else if (matchesOr(LHS, B, Idx) && haveNoCommonBitsSet(B, Idx, *DL)) {
-    // If LHS is in the form of "Base | Index" and Base and Index have no common
-    // bits set, then
-    //   Base | Index = Base + Index
-    // and I is thus in the form of "(Base + Index) * RHS".
     allocateCandidatesAndFindBasis(Candidate::Mul, SE->getSCEV(B), Idx, RHS, I);
   } else {
     // Otherwise, at least try the form (LHS + 0) * RHS.
@@ -1410,8 +1405,45 @@ bool StraightLineStrengthReduceLegacyPass::runOnFunction(Function &F) {
   return StraightLineStrengthReduce(Opts, DL, DT, SE, TTI).runOnFunction(F);
 }
 
+bool StraightLineStrengthReduce::normalizeMulOperands(Function &F) {
+  SmallMapVector<BinaryOperator *, SmallVector<Use *, 2>, 8> Worklist;
+  for (Instruction &I : instructions(F)) {
+    if (I.getOpcode() != Instruction::Mul || !isa<IntegerType>(I.getType()))
+      continue;
+    for (Use &U : I.operands()) {
+      auto *Or = dyn_cast<BinaryOperator>(U.get());
+      if (!Or || !match(Or, m_c_Or(m_Value(), m_ConstantInt())))
+        continue;
+      if ((cast<PossiblyDisjointInst>(Or)->isDisjoint() ||
+           haveNoCommonBitsSet(Or->getOperand(0), Or->getOperand(1), *DL)) &&
+          DebugCounter::shouldExecute(SLSROrNormalizeCounter))
+        Worklist[Or].push_back(&U);
+    }
+  }
+
+  // Normalize before candidate collection so both the IR and SCEV represent
+  // addition even after the reuse guard drops operand poison annotations.
+  for (auto &[Or, Uses] : Worklist) {
+    auto *Add = BinaryOperator::CreateAdd(Or->getOperand(0), Or->getOperand(1),
+                                          Or->getName() + ".slsr");
+    Add->setDebugLoc(Or->getDebugLoc());
+    Add->insertAfter(Or->getIterator());
+    for (Use *U : Uses) {
+      SE->forgetValue(U->getUser());
+      U->set(Add);
+    }
+    if (Or->use_empty()) {
+      Add->takeName(Or);
+      SE->forgetValue(Or);
+      Or->eraseFromParent();
+    }
+  }
+  return !Worklist.empty();
+}
+
 bool StraightLineStrengthReduce::runOnFunction(Function &F) {
   LLVM_DEBUG(dbgs() << "SLSR on Function: " << F.getName() << "\n");
+  bool Changed = normalizeMulOperands(F);
   // Traverse the dominator tree in the depth-first order. This order makes sure
   // all bases of a candidate are in Candidates when we process it.
   for (const auto Node : depth_first(DT))
@@ -1438,7 +1470,7 @@ bool StraightLineStrengthReduce::runOnFunction(Function &F) {
     if (DeadIns->getParent())
       RecursivelyDeleteTriviallyDeadInstructions(DeadIns);
 
-  bool Ret = !DeadInstructions.empty();
+  bool Ret = Changed || !DeadInstructions.empty();
   DeadInstructions.clear();
   DependencyGraph.clear();
   RewriteCandidates.clear();
