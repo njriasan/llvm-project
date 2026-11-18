@@ -8267,7 +8267,8 @@ static void AddMethodTemplateCandidateImmediately(
 
     Candidate.IgnoreObjectArgument =
         Method->isStatic() ||
-        (!Method->isExplicitObjectMemberFunction() && ObjectType.isNull());
+        (ObjectType.isNull() && !(Method->isExplicitObjectMemberFunction() &&
+                                  Candidate.TookAddressOfOverload));
     Candidate.ExplicitCallArguments = Args.size();
     if (Result == TemplateDeductionResult::NonDependentConversionFailure)
       Candidate.FailureKind = ovl_fail_bad_conversion;
@@ -8391,11 +8392,11 @@ static void AddTemplateOverloadCandidateImmediately(
         CandidateSet.getKind() ==
         OverloadCandidateSet::CSK_AddressOfOverloadSet;
 
+    auto *Method = dyn_cast<CXXMethodDecl>(Candidate.Function);
     Candidate.IgnoreObjectArgument =
-        isa<CXXMethodDecl>(Candidate.Function) &&
-        !cast<CXXMethodDecl>(Candidate.Function)
-             ->isExplicitObjectMemberFunction() &&
-        !isa<CXXConstructorDecl>(Candidate.Function);
+        Method && !isa<CXXConstructorDecl>(Method) &&
+        !(Method->isExplicitObjectMemberFunction() &&
+          Candidate.TookAddressOfOverload);
 
     Candidate.ExplicitCallArguments = Args.size();
     if (Result == TemplateDeductionResult::NonDependentConversionFailure)
@@ -15102,6 +15103,15 @@ static ExprResult FinishOverloadedCallExpr(Sema &SemaRef, Scope *S, Expr *Fn,
     SemaRef.CheckUnresolvedLookupAccess(ULE, (*Best)->FoundDecl);
     if (SemaRef.DiagnoseUseOfDecl(FDecl, ULE->getNameLoc()))
       return ExprError();
+    // C++ [over.call.func]p3: If overload resolution selects a non-static
+    // member function, the call is ill-formed. Implicit object member
+    // functions are diagnosed by BuildResolvedCallExpr.
+    if (auto *Method = dyn_cast<CXXMethodDecl>(FDecl);
+        Method && Method->isExplicitObjectMemberFunction() &&
+        !(*Best)->TookAddressOfOverload)
+      return ExprError(
+          SemaRef.Diag(LParenLoc, diag::err_member_call_without_object)
+          << Fn->getSourceRange() << 0);
     ExprResult Res =
         SemaRef.FixOverloadedFunctionReference(Fn, (*Best)->FoundDecl, FDecl);
     if (Res.isInvalid())
