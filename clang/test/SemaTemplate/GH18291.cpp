@@ -129,45 +129,41 @@ namespace static_vs_nonstatic {
     }
 
     struct D {
-      template <class... Args> static void constrained_object(Args *...) = delete;
       template <class... Args>
-        requires(sizeof...(Args) > 0)
-      void constrained_object(this D &, Args *...);
+      static void constrained_object(Args *...) = delete; // expected-note {{candidate function}}
+      template <class... Args>
+        requires true
+      void constrained_object(this D &, Args *...); // expected-note {{candidate function}}
 
       template <class... Args> void constrained_static(this D &, Args *...) = delete;
       template <class... Args>
         requires(sizeof...(Args) > 0)
       static void constrained_static(Args *...);
 
-      template <class... Args> static void trailing_pack(int, Args...) = delete;
-      template <class = void> void trailing_pack(this D &, int);
+      template <class...> static void defaulted_trailing_pack(int, int = 0);
+      template <class... Args>
+      void defaulted_trailing_pack(this D &, int, Args...) = delete;
 
-      template <class T> static void default_arg(T *); // expected-note {{candidate function}}
-      template <class T>
-        requires(sizeof(T) > 0)
-      void default_arg(this D &, T *, int = 0); // expected-note {{candidate function}}
+      template <class...>
+      static void extra_default(int, int = 0, int = 0); // expected-note {{candidate function}}
+      template <class... Args>
+      void extra_default(this D &, int, Args...); // expected-note {{candidate function}}
 
       template <class...> struct List {};
 
-      template <class T, class... Args>
-      static void defaulted_pack(int, List<T, Args...> = {}); // expected-note {{candidate function}}
       template <class T>
-      void defaulted_pack(this D &, int, List<T> = {}); // expected-note {{candidate function}}
-
+      static void nested_pack(int = 0, List<T> = {});
       template <class T, class... Args>
-      static void constrained_pack(List<T, Args...>, List<T>) = delete;
-      template <class T, class... Args>
-        requires(sizeof(T) > 0)
-      void constrained_pack(this D &, List<T, Args...>, List<T>);
+      void nested_pack(this D &, List<T, Args...> = {}) = delete;
     };
 
     void test_tiebreakers(D d, int *p) {
       d.constrained_object(p);
+      d.constrained_object(); // expected-error {{call to member function 'constrained_object' is ambiguous}}
       d.constrained_static(p);
-      d.trailing_pack(0);
-      d.default_arg(p); // expected-error {{call to member function 'default_arg' is ambiguous}}
-      d.defaulted_pack<int>(0); // expected-error {{call to member function 'defaulted_pack' is ambiguous}}
-      d.constrained_pack(D::List<int>{}, D::List<int>{});
+      d.defaulted_trailing_pack(0);
+      d.extra_default(0); // expected-error {{call to member function 'extra_default' is ambiguous}}
+      d.nested_pack<int>();
     }
   } // namespace explicit_obj_param
 } // namespace static_vs_nonstatic

@@ -6189,34 +6189,27 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
   //   have a corresponding parameter, and if F does not have a trailing
   //   function parameter pack, then F is more specialized than G.
 
-  // The trailing function pack and constraint tie-breakers use the full lists,
-  // with the same object parameter adjustments as deduction.
-  ArrayRef<ParmVarDecl *> DeclParams1 =
-      FD1->parameters().drop_front(Args1ParamOffset < 0);
-  ArrayRef<ParmVarDecl *> DeclParams2 =
-      FD2->parameters().drop_front(Args2ParamOffset < 0);
-
   SmallVector<QualType> Param1;
-  Param1.reserve(DeclParams1.size() + ShouldConvert1);
+  Param1.reserve(FD1->param_size() + ShouldConvert1);
   if (ShouldConvert1)
     Param1.push_back(Obj1Ty);
-  for (const auto &P : DeclParams1)
+  for (const auto &P : FD1->parameters())
     Param1.push_back(P->getType());
 
   SmallVector<QualType> Param2;
-  Param2.reserve(DeclParams2.size() + ShouldConvert2);
+  Param2.reserve(FD2->param_size() + ShouldConvert2);
   if (ShouldConvert2)
     Param2.push_back(Obj2Ty);
-  for (const auto &P : DeclParams2)
+  for (const auto &P : FD2->parameters())
     Param2.push_back(P->getType());
 
   unsigned NumParams1 = Param1.size();
   unsigned NumParams2 = Param2.size();
 
   bool Variadic1 =
-      !DeclParams1.empty() && DeclParams1.back()->isParameterPack();
+      FD1->param_size() && FD1->parameters().back()->isParameterPack();
   bool Variadic2 =
-      !DeclParams2.empty() && DeclParams2.back()->isParameterPack();
+      FD2->param_size() && FD2->parameters().back()->isParameterPack();
   if (Variadic1 != Variadic2) {
     if (Variadic1 && NumParams1 > NumParams2)
       return FT2;
@@ -6224,16 +6217,11 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
       return FT1;
   }
 
-  // When an explicit object parameter was dropped, compare the parameters used
-  // in deduction so an unused defaulted parameter cannot break a tie.
-  size_t NumPackParams = std::min(Param1.size(), Param2.size());
-  if (Args1ParamOffset < 0 || Args2ParamOffset < 0)
-    NumPackParams = std::min(Args1.size(), Args2.size());
-
   // Skip this tie breaker if we are performing overload resolution with partial
   // arguments, as this breaks some assumptions about how closely related the
   // candidates are.
-  for (size_t i = 0; !PartialOverloading && i < NumPackParams; ++i) {
+  for (int i = 0, e = std::min(NumParams1, NumParams2);
+       !PartialOverloading && i < e; ++i) {
     QualType T1 = Param1[i].getCanonicalType();
     QualType T2 = Param2[i].getCanonicalType();
     auto *TST1 = dyn_cast<TemplateSpecializationType>(T1);
@@ -6255,6 +6243,15 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
   if (!Context.getLangOpts().CPlusPlus20)
     return nullptr;
 
+  // Use the same object parameter adjustment for constraints when comparing
+  // a trailing function parameter pack in deduction.
+  ArrayRef<QualType> ConstraintParams1 =
+      ArrayRef(Param1).drop_front(Args1ParamOffset < 0 && !Args1.empty() &&
+                                  isa<PackExpansionType>(Args1.back()));
+  ArrayRef<QualType> ConstraintParams2 =
+      ArrayRef(Param2).drop_front(Args2ParamOffset < 0 && !Args2.empty() &&
+                                  isa<PackExpansionType>(Args2.back()));
+
   // Match GCC on not implementing [temp.func.order]p6.2.1.
 
   // C++20 [temp.func.order]p6:
@@ -6268,7 +6265,8 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
   //   than the other.
   TemplateParameterList *TPL1 = FT1->getTemplateParameters();
   TemplateParameterList *TPL2 = FT2->getTemplateParameters();
-  if (TPL1->size() != TPL2->size() || NumParams1 != NumParams2)
+  if (TPL1->size() != TPL2->size() ||
+      ConstraintParams1.size() != ConstraintParams2.size())
     return nullptr;
 
   // C++20 [temp.func.order]p6.2.2:
@@ -6284,8 +6282,9 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
   // [dcl.fct]p5:
   // Any top-level cv-qualifiers modifying a parameter type are deleted when
   // forming the function type.
-  for (unsigned i = 0; i < NumParams1; ++i)
-    if (!Context.hasSameUnqualifiedType(Param1[i], Param2[i]))
+  for (unsigned i = 0; i < ConstraintParams1.size(); ++i)
+    if (!Context.hasSameUnqualifiedType(ConstraintParams1[i],
+                                        ConstraintParams2[i]))
       return nullptr;
 
   // C++20 [temp.func.order]p6.3:
