@@ -127,6 +127,48 @@ namespace static_vs_nonstatic {
       b.f(0);
       c.f(0);
     }
+
+    struct D {
+      template <class... Args> static void constrained_object(Args *...) = delete;
+      template <class... Args>
+        requires(sizeof...(Args) > 0)
+      void constrained_object(this D &, Args *...);
+
+      template <class... Args> void constrained_static(this D &, Args *...) = delete;
+      template <class... Args>
+        requires(sizeof...(Args) > 0)
+      static void constrained_static(Args *...);
+
+      template <class... Args> static void trailing_pack(int, Args...) = delete;
+      template <class = void> void trailing_pack(this D &, int);
+
+      template <class T> static void default_arg(T *); // expected-note {{candidate function}}
+      template <class T>
+        requires(sizeof(T) > 0)
+      void default_arg(this D &, T *, int = 0); // expected-note {{candidate function}}
+
+      template <class...> struct List {};
+
+      template <class T, class... Args>
+      static void defaulted_pack(int, List<T, Args...> = {}); // expected-note {{candidate function}}
+      template <class T>
+      void defaulted_pack(this D &, int, List<T> = {}); // expected-note {{candidate function}}
+
+      template <class T, class... Args>
+      static void constrained_pack(List<T, Args...>, List<T>) = delete;
+      template <class T, class... Args>
+        requires(sizeof(T) > 0)
+      void constrained_pack(this D &, List<T, Args...>, List<T>);
+    };
+
+    void test_tiebreakers(D d, int *p) {
+      d.constrained_object(p);
+      d.constrained_static(p);
+      d.trailing_pack(0);
+      d.default_arg(p); // expected-error {{call to member function 'default_arg' is ambiguous}}
+      d.defaulted_pack<int>(0); // expected-error {{call to member function 'defaulted_pack' is ambiguous}}
+      d.constrained_pack(D::List<int>{}, D::List<int>{});
+    }
   } // namespace explicit_obj_param
 } // namespace static_vs_nonstatic
 
