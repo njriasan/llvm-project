@@ -155,6 +155,24 @@ namespace static_vs_nonstatic {
       static void nested_pack(int = 0, List<T> = {});
       template <class T, class... Args>
       void nested_pack(this D &, List<T, Args...> = {}) = delete;
+
+      template <class T, class... U, class... V>
+      static void constrained_nested_pack(List<T, U...>, List<T>, V *...) = delete;
+      template <class T, class... U, class... V>
+        requires true
+      void constrained_nested_pack(this D &, List<T, U...>, List<T>, V *...);
+
+      template <class T, class... U, class... V>
+        requires true
+      void constrained_nested_pack_reversed(this D &, List<T, U...>, List<T>, V *...);
+      template <class T, class... U, class... V>
+      static void constrained_nested_pack_reversed(List<T, U...>, List<T>, V *...) = delete;
+
+      template <class T, class... Args>
+      static void empty_nested_args(T, typename T::template List<>, Args *...) = delete;
+      template <class T, class... Args>
+        requires true
+      void empty_nested_args(this D &, T, typename T::template List<>, Args *...);
     };
 
     void test_tiebreakers(D d, int *p) {
@@ -164,6 +182,9 @@ namespace static_vs_nonstatic {
       d.defaulted_trailing_pack(0);
       d.extra_default(0); // expected-error {{call to member function 'extra_default' is ambiguous}}
       d.nested_pack<int>();
+      d.constrained_nested_pack(D::List<int>{}, D::List<int>{}, p);
+      d.constrained_nested_pack_reversed(D::List<int>{}, D::List<int>{}, p);
+      d.empty_nested_args(d, D::List<>{}, p);
     }
   } // namespace explicit_obj_param
 } // namespace static_vs_nonstatic

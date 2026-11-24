@@ -6044,6 +6044,9 @@ getMoreSpecializedTrailingPackTieBreaker(
     const TemplateSpecializationType *TST2) {
   ArrayRef<TemplateArgument> As1 = TST1->template_arguments(),
                              As2 = TST2->template_arguments();
+  if (As1.empty() || As2.empty())
+    return MoreSpecializedTrailingPackTieBreakerResult::Equal;
+
   const TemplateArgument &TA1 = As1.back(), &TA2 = As2.back();
   // C++26 [temp.deduct.partial]p11:
   //   If, after considering the above, function template F is at least as
@@ -6217,13 +6220,26 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
       return FT1;
   }
 
+  bool DropObject1 = Args1ParamOffset < 0 && !Args1.empty() &&
+                     isa<PackExpansionType>(Args1.back());
+  bool DropObject2 = Args2ParamOffset < 0 && !Args2.empty() &&
+                     isa<PackExpansionType>(Args2.back());
+  // When deduction compared a pack after dropping the explicit object
+  // parameter, use those argument lists to compare corresponding parameters
+  // and ignore omitted defaults.
+  bool UseComparedParams = DropObject1 || DropObject2;
+  ArrayRef<QualType> PackParams1 =
+      UseComparedParams ? ArrayRef(Args1) : ArrayRef(Param1);
+  ArrayRef<QualType> PackParams2 =
+      UseComparedParams ? ArrayRef(Args2) : ArrayRef(Param2);
+
   // Skip this tie breaker if we are performing overload resolution with partial
   // arguments, as this breaks some assumptions about how closely related the
   // candidates are.
-  for (int i = 0, e = std::min(NumParams1, NumParams2);
+  for (size_t i = 0, e = std::min(PackParams1.size(), PackParams2.size());
        !PartialOverloading && i < e; ++i) {
-    QualType T1 = Param1[i].getCanonicalType();
-    QualType T2 = Param2[i].getCanonicalType();
+    QualType T1 = PackParams1[i].getCanonicalType();
+    QualType T2 = PackParams2[i].getCanonicalType();
     auto *TST1 = dyn_cast<TemplateSpecializationType>(T1);
     auto *TST2 = dyn_cast<TemplateSpecializationType>(T2);
     if (!TST1 || !TST2)
@@ -6243,14 +6259,10 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
   if (!Context.getLangOpts().CPlusPlus20)
     return nullptr;
 
-  // Use the same object parameter adjustment for constraints when comparing
-  // a trailing function parameter pack in deduction.
   ArrayRef<QualType> ConstraintParams1 =
-      ArrayRef(Param1).drop_front(Args1ParamOffset < 0 && !Args1.empty() &&
-                                  isa<PackExpansionType>(Args1.back()));
+      ArrayRef(Param1).drop_front(DropObject1);
   ArrayRef<QualType> ConstraintParams2 =
-      ArrayRef(Param2).drop_front(Args2ParamOffset < 0 && !Args2.empty() &&
-                                  isa<PackExpansionType>(Args2.back()));
+      ArrayRef(Param2).drop_front(DropObject2);
 
   // Match GCC on not implementing [temp.func.order]p6.2.1.
 
