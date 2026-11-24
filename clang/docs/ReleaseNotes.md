@@ -1322,6 +1322,10 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
 - Fixed bugs where Clang could apply an incorrectly high alignment to a vptr
   load within a virtual function thunk. (#GH242501)
 
+- Fixed partial ordering of a static member function template against an
+  explicit object member function template, which reported calls such as
+  `a.f(0)` as ambiguous when the static template was more specialized.
+
 #### Bug Fixes to AST Handling
 
 - Fixed a non-deterministic ordering of unused local typedefs that made

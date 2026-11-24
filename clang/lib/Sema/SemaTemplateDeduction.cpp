@@ -5847,10 +5847,13 @@ static TemplateDeductionResult FinishTemplateArgumentDeduction(
 
 /// Determine whether the function template \p FT1 is at least as
 /// specialized as \p FT2.
+///
+/// \p Args2ParamOffset is the position of a type in \p Args2 minus the index
+/// of the corresponding function parameter of \p FT2.
 static bool isAtLeastAsSpecializedAs(
     Sema &S, SourceLocation Loc, FunctionTemplateDecl *FT1,
     FunctionTemplateDecl *FT2, TemplatePartialOrderingContext TPOC,
-    ArrayRef<QualType> Args1, ArrayRef<QualType> Args2, bool Args1Offset) {
+    ArrayRef<QualType> Args1, ArrayRef<QualType> Args2, int Args2ParamOffset) {
   FunctionDecl *FD1 = FT1->getTemplatedDecl();
   FunctionDecl *FD2 = FT2->getTemplatedDecl();
   const FunctionProtoType *Proto1 = FD1->getType()->getAs<FunctionProtoType>();
@@ -5945,16 +5948,17 @@ static bool isAtLeastAsSpecializedAs(
                   S, TemplateParams, Args2, Args1, Info, Deduced,
                   PartialOrderingKind::Call, /*FinishingDeduction=*/true,
                   [&](Sema &S, TemplateParameterList *, int ParamIdx,
-                      UnsignedOrNone ArgIdx, QualType P, QualType A,
+                      unsigned ArgIdx, QualType P, QualType A,
                       TemplateDeductionInfo &Info,
                       SmallVectorImpl<DeducedTemplateArgument> &Deduced,
                       PartialOrderingKind) {
-                    if (ArgIdx && *ArgIdx >= static_cast<unsigned>(Args1Offset))
-                      ArgIdx = *ArgIdx - Args1Offset;
-                    else
-                      ArgIdx = std::nullopt;
+                    int AdjustedArgIdx =
+                        static_cast<int>(ArgIdx) - Args2ParamOffset;
+                    UnsignedOrNone DeclParamIdx = std::nullopt;
+                    if (AdjustedArgIdx >= 0)
+                      DeclParamIdx = static_cast<unsigned>(AdjustedArgIdx);
                     return ::CheckDeductionConsistency(
-                        S, FTD, ArgIdx, P, A, DeducedArgs,
+                        S, FTD, DeclParamIdx, P, A, DeducedArgs,
                         /*CheckConsistency=*/HasDeducedParam[ParamIdx]);
                   });
             }) == TemplateDeductionResult::Success;
@@ -6040,6 +6044,9 @@ getMoreSpecializedTrailingPackTieBreaker(
     const TemplateSpecializationType *TST2) {
   ArrayRef<TemplateArgument> As1 = TST1->template_arguments(),
                              As2 = TST2->template_arguments();
+  if (As1.empty() || As2.empty())
+    return MoreSpecializedTrailingPackTieBreakerResult::Equal;
+
   const TemplateArgument &TA1 = As1.back(), &TA2 = As2.back();
   // C++26 [temp.deduct.partial]p11:
   //   If, after considering the above, function template F is at least as
@@ -6080,8 +6087,10 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
   const FunctionDecl *FD2 = FT2->getTemplatedDecl();
   bool ShouldConvert1 = false;
   bool ShouldConvert2 = false;
-  bool Args1Offset = false;
-  bool Args2Offset = false;
+  // +1 if an implicit object parameter is inserted into the compared types,
+  // -1 if the explicit object parameter is dropped from them.
+  int Args1ParamOffset = 0;
+  int Args2ParamOffset = 0;
   QualType Obj1Ty;
   QualType Obj2Ty;
   if (TPOC == TPOC_Call) {
@@ -6115,10 +6124,8 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
     if (auto OO = FD1->getOverloadedOperator();
         (NonStaticMethod1 && NonStaticMethod2) ||
         (OO != OO_None && OO != OO_Call && OO != OO_Subscript)) {
-      ShouldConvert1 =
-          NonStaticMethod1 && !Method1->hasCXXExplicitFunctionObjectParameter();
-      ShouldConvert2 =
-          NonStaticMethod2 && !Method2->hasCXXExplicitFunctionObjectParameter();
+      ShouldConvert1 = Method1 && Method1->isImplicitObjectMemberFunction();
+      ShouldConvert2 = Method2 && Method2->isImplicitObjectMemberFunction();
       NumComparedArguments += 1;
 
       if (ShouldConvert1) {
@@ -6130,7 +6137,7 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
         Obj1Ty = GetImplicitObjectParameterType(this->Context, Method1,
                                                 RawObj1Ty, IsRValRef2);
         Args1.push_back(Obj1Ty);
-        Args1Offset = true;
+        Args1ParamOffset = 1;
       }
       if (ShouldConvert2) {
         bool IsRValRef1 =
@@ -6141,13 +6148,17 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
         Obj2Ty = GetImplicitObjectParameterType(this->Context, Method2,
                                                 RawObj2Ty, IsRValRef1);
         Args2.push_back(Obj2Ty);
-        Args2Offset = true;
+        Args2ParamOffset = 1;
       }
     } else {
-      if (NonStaticMethod1 && Method1->hasCXXExplicitFunctionObjectParameter())
+      if (Method1 && Method1->isExplicitObjectMemberFunction()) {
         Params1Begin += 1;
-      if (NonStaticMethod2 && Method2->hasCXXExplicitFunctionObjectParameter())
+        Args1ParamOffset = -1;
+      }
+      if (Method2 && Method2->isExplicitObjectMemberFunction()) {
         Params2Begin += 1;
+        Args2ParamOffset = -1;
+      }
     }
     Args1.insert(Args1.end(), Params1Begin, Proto1->param_type_end());
     Args2.insert(Args2.end(), Params2Begin, Proto2->param_type_end());
@@ -6164,9 +6175,9 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
     assert(!Reversed && "Only call context could have reversed arguments");
   }
   bool Better1 = isAtLeastAsSpecializedAs(*this, Loc, FT1, FT2, TPOC, Args1,
-                                          Args2, Args2Offset);
+                                          Args2, Args2ParamOffset);
   bool Better2 = isAtLeastAsSpecializedAs(*this, Loc, FT2, FT1, TPOC, Args2,
-                                          Args1, Args1Offset);
+                                          Args1, Args1ParamOffset);
   // C++ [temp.deduct.partial]p10:
   //   F is more specialized than G if F is at least as specialized as G and G
   //   is not at least as specialized as F.
@@ -6209,13 +6220,26 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
       return FT1;
   }
 
+  bool DropObject1 = Args1ParamOffset < 0 && !Args1.empty() &&
+                     isa<PackExpansionType>(Args1.back());
+  bool DropObject2 = Args2ParamOffset < 0 && !Args2.empty() &&
+                     isa<PackExpansionType>(Args2.back());
+  // When deduction compared a pack after dropping the explicit object
+  // parameter, use those argument lists to compare corresponding parameters
+  // and ignore omitted defaults.
+  bool UseComparedParams = DropObject1 || DropObject2;
+  ArrayRef<QualType> PackParams1 =
+      UseComparedParams ? ArrayRef(Args1) : ArrayRef(Param1);
+  ArrayRef<QualType> PackParams2 =
+      UseComparedParams ? ArrayRef(Args2) : ArrayRef(Param2);
+
   // Skip this tie breaker if we are performing overload resolution with partial
   // arguments, as this breaks some assumptions about how closely related the
   // candidates are.
-  for (int i = 0, e = std::min(NumParams1, NumParams2);
+  for (size_t i = 0, e = std::min(PackParams1.size(), PackParams2.size());
        !PartialOverloading && i < e; ++i) {
-    QualType T1 = Param1[i].getCanonicalType();
-    QualType T2 = Param2[i].getCanonicalType();
+    QualType T1 = PackParams1[i].getCanonicalType();
+    QualType T2 = PackParams2[i].getCanonicalType();
     auto *TST1 = dyn_cast<TemplateSpecializationType>(T1);
     auto *TST2 = dyn_cast<TemplateSpecializationType>(T2);
     if (!TST1 || !TST2)
@@ -6235,6 +6259,11 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
   if (!Context.getLangOpts().CPlusPlus20)
     return nullptr;
 
+  ArrayRef<QualType> ConstraintParams1 =
+      ArrayRef(Param1).drop_front(DropObject1);
+  ArrayRef<QualType> ConstraintParams2 =
+      ArrayRef(Param2).drop_front(DropObject2);
+
   // Match GCC on not implementing [temp.func.order]p6.2.1.
 
   // C++20 [temp.func.order]p6:
@@ -6248,7 +6277,8 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
   //   than the other.
   TemplateParameterList *TPL1 = FT1->getTemplateParameters();
   TemplateParameterList *TPL2 = FT2->getTemplateParameters();
-  if (TPL1->size() != TPL2->size() || NumParams1 != NumParams2)
+  if (TPL1->size() != TPL2->size() ||
+      ConstraintParams1.size() != ConstraintParams2.size())
     return nullptr;
 
   // C++20 [temp.func.order]p6.2.2:
@@ -6264,8 +6294,9 @@ FunctionTemplateDecl *Sema::getMoreSpecializedTemplate(
   // [dcl.fct]p5:
   // Any top-level cv-qualifiers modifying a parameter type are deleted when
   // forming the function type.
-  for (unsigned i = 0; i < NumParams1; ++i)
-    if (!Context.hasSameUnqualifiedType(Param1[i], Param2[i]))
+  for (unsigned i = 0; i < ConstraintParams1.size(); ++i)
+    if (!Context.hasSameUnqualifiedType(ConstraintParams1[i],
+                                        ConstraintParams2[i]))
       return nullptr;
 
   // C++20 [temp.func.order]p6.3:

@@ -110,6 +110,82 @@ namespace static_vs_nonstatic {
     void g(){
       A::f(0);
     }
+
+    struct B {
+      template <class... Args>
+        static void f(int, Args... args) {}
+      template <class... Args>
+        void f(this B &, Args... args) = delete;
+    };
+    struct C {
+      template <class... Args>
+        void f(this C &, Args... args) = delete;
+      template <class... Args>
+        static void f(int, Args... args) {}
+    };
+    void h(B b, C c) {
+      b.f(0);
+      c.f(0);
+    }
+
+    struct D {
+      template <class... Args>
+      static void constrained_object(Args *...) = delete; // expected-note {{candidate function}}
+      template <class... Args>
+        requires true
+      void constrained_object(this D &, Args *...); // expected-note {{candidate function}}
+
+      template <class... Args> void constrained_static(this D &, Args *...) = delete;
+      template <class... Args>
+        requires(sizeof...(Args) > 0)
+      static void constrained_static(Args *...);
+
+      template <class...> static void defaulted_trailing_pack(int, int = 0);
+      template <class... Args>
+      void defaulted_trailing_pack(this D &, int, Args...) = delete;
+
+      template <class...>
+      static void extra_default(int, int = 0, int = 0); // expected-note {{candidate function}}
+      template <class... Args>
+      void extra_default(this D &, int, Args...); // expected-note {{candidate function}}
+
+      template <class...> struct List {};
+
+      template <class T>
+      static void nested_pack(int = 0, List<T> = {});
+      template <class T, class... Args>
+      void nested_pack(this D &, List<T, Args...> = {}) = delete;
+
+      template <class T, class... U, class... V>
+      static void constrained_nested_pack(List<T, U...>, List<T>, V *...) = delete;
+      template <class T, class... U, class... V>
+        requires true
+      void constrained_nested_pack(this D &, List<T, U...>, List<T>, V *...);
+
+      template <class T, class... U, class... V>
+        requires true
+      void constrained_nested_pack_reversed(this D &, List<T, U...>, List<T>, V *...);
+      template <class T, class... U, class... V>
+      static void constrained_nested_pack_reversed(List<T, U...>, List<T>, V *...) = delete;
+
+      template <class T, class... Args>
+      static void empty_nested_args(T, typename T::template List<>, Args *...) = delete;
+      template <class T, class... Args>
+        requires true
+      void empty_nested_args(this D &, T, typename T::template List<>, Args *...);
+    };
+
+    void test_tiebreakers(D d, int *p) {
+      d.constrained_object(p);
+      d.constrained_object(); // expected-error {{call to member function 'constrained_object' is ambiguous}}
+      d.constrained_static(p);
+      d.defaulted_trailing_pack(0);
+      d.extra_default(0); // expected-error {{call to member function 'extra_default' is ambiguous}}
+      d.nested_pack<int>();
+      d.constrained_nested_pack(D::List<int>{}, D::List<int>{}, p);
+      d.constrained_nested_pack_reversed(D::List<int>{}, D::List<int>{}, p);
+      d.empty_nested_args(d, D::List<>{}, p);
+    }
   } // namespace explicit_obj_param
 } // namespace static_vs_nonstatic
 
