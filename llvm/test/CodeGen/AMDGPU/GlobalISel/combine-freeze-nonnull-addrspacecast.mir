@@ -15,7 +15,7 @@ body: |
     ; CHECK-NEXT: {{  $}}
     ; CHECK-NEXT: [[COPY:%[0-9]+]]:_(p0) = COPY $vgpr0_vgpr1
     ; CHECK-NEXT: [[FREEZE:%[0-9]+]]:_(p0) = G_FREEZE [[COPY]]
-    ; CHECK-NEXT: [[ADDRSPACE_CAST:%[0-9]+]]:_(p3) = nonnull G_ADDRSPACE_CAST [[FREEZE]](p0)
+    ; CHECK-NEXT: [[ADDRSPACE_CAST:%[0-9]+]]:_(p3) = G_ADDRSPACE_CAST [[FREEZE]](p0)
     ; CHECK-NEXT: $vgpr0 = COPY [[ADDRSPACE_CAST]](p3)
     ; CHECK-NEXT: SI_RETURN implicit $vgpr0
     %0:_(p0) = COPY $vgpr0_vgpr1
