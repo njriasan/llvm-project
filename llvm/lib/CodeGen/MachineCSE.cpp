@@ -715,6 +715,9 @@ bool MachineCSEImpl::ProcessBlockCSE(MachineBasicBlock *MBB) {
         ++NumCrossBBCSEs;
       }
 
+      // CSMI now also provides MI's value.
+      CSMI->intersectFlagsWith(MI);
+
       MI.eraseFromParent();
       ++NumCSEs;
       if (!PhysRefs.empty())
