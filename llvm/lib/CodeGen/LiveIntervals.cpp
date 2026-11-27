@@ -614,6 +614,14 @@ bool LiveIntervals::shrinkToUses(LiveInterval *li,
     if (!MO.readsReg())
       continue;
     const MachineInstr &UseMI = *MO.getParent();
+    if (UseMI.isPHI()) {
+      // PHI operands are read at the end of their incoming block.
+      SlotIndex Idx =
+          getMBBEndIdx(UseMI.getOperand(MO.getOperandNo() + 1).getMBB());
+      if (VNInfo *VNI = li->getVNInfoBefore(Idx))
+        WorkList.emplace_back(Idx, VNI);
+      continue;
+    }
     SlotIndex Idx =
         getInstructionIndex(UseMI).getRegSlot(MO.isEarlyClobberDefOrUse());
     LiveQueryResult LRQ = li->Query(Idx);
@@ -716,8 +724,12 @@ void LiveIntervals::collectSubRangeUses(Register Reg,
     // A use tied to an early-clobber def is read at the early-clobber slot.
     // Using the normal register slot can extend a subrange beyond the main
     // range when rebuilding it below.
-    SlotIndex Idx = getInstructionIndex(*MO.getParent())
-                        .getRegSlot(MO.isEarlyClobberDefOrUse());
+    const MachineInstr &UseMI = *MO.getParent();
+    SlotIndex Idx =
+        UseMI.isPHI()
+            ? getMBBEndIdx(UseMI.getOperand(MO.getOperandNo() + 1).getMBB())
+            : getInstructionIndex(UseMI).getRegSlot(
+                  MO.isEarlyClobberDefOrUse());
     // Merge adjacent operands of the same instruction.
     if (!Uses.empty() && Uses.back().first == Idx) {
       Uses.back().second |= LaneMask;
@@ -741,6 +753,12 @@ void LiveIntervals::shrinkSubRangeToUses(LiveInterval::SubRange &SR,
       continue;
 
     SlotIndex Idx = Use.first;
+    // PHI uses are recorded at the end of their incoming block.
+    if (Idx.isBlock()) {
+      if (VNInfo *VNI = SR.getVNInfoBefore(Idx))
+        WorkList.emplace_back(Idx, VNI);
+      continue;
+    }
     LiveQueryResult LRQ = SR.Query(Idx);
     VNInfo *VNI = LRQ.valueIn();
     // For Subranges it is possible that only undef values are left in that
