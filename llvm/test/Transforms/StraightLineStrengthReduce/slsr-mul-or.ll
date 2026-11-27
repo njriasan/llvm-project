@@ -431,3 +431,78 @@ define <2 x i8> @vector_or(<2 x i8> %x, <2 x i8> %s) {
   %m1 = mul <2 x i8> %o1, %s
   ret <2 x i8> %m1
 }
+
+; Reusing the basis requires converting both disjoint ORs to additions.
+define noundef i8 @nested_disjoint(i8 noundef %x, i8 noundef %s) {
+; CHECK-LABEL: define noundef i8 @nested_disjoint(
+; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
+; CHECK-NEXT:    [[INNER:%.*]] = or disjoint i8 [[X]], 4
+; CHECK-NEXT:    [[OUTER:%.*]] = or disjoint i8 [[INNER]], 8
+; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[OUTER]], [[S]]
+; CHECK-NEXT:    [[F:%.*]] = freeze i8 [[M0]]
+; CHECK-NEXT:    call void @sink(i8 [[F]])
+; CHECK-NEXT:    [[SUM:%.*]] = add i8 [[X]], 12
+; CHECK-NEXT:    [[M1:%.*]] = mul i8 [[SUM]], [[S]]
+; CHECK-NEXT:    ret i8 [[M1]]
+;
+  %inner = or disjoint i8 %x, 4
+  %outer = or disjoint i8 %inner, 8
+  %m0 = mul i8 %outer, %s
+  %f = freeze i8 %m0
+  call void @sink(i8 %f)
+  %sum = add i8 %x, 12
+  %m1 = mul i8 %sum, %s
+  ret i8 %m1
+}
+
+; A disjoint OR below an add of a non-OR basis. Reusing the basis drops nsw
+; and converts the OR to an addition.
+define i8 @add_basis_with_disjoint_or(i8 noundef %x, i8 noundef %s) {
+; CHECK-LABEL: define i8 @add_basis_with_disjoint_or(
+; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
+; CHECK-NEXT:    [[O:%.*]] = or disjoint i8 [[X]], 4
+; CHECK-NEXT:    [[A0:%.*]] = add nsw i8 [[O]], 1
+; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[A0]], [[S]]
+; CHECK-NEXT:    [[F:%.*]] = freeze i8 [[M0]]
+; CHECK-NEXT:    call void @sink(i8 [[F]])
+; CHECK-NEXT:    [[A1:%.*]] = add i8 [[O]], 2
+; CHECK-NEXT:    [[M1:%.*]] = mul i8 [[A1]], [[S]]
+; CHECK-NEXT:    ret i8 [[M1]]
+;
+  %o = or disjoint i8 %x, 4
+  %a0 = add nsw i8 %o, 1
+  %m0 = mul i8 %a0, %s
+  %f = freeze i8 %m0
+  call void @sink(i8 %f)
+  %a1 = add i8 %o, 2
+  %m1 = mul i8 %a1, %s
+  ret i8 %m1
+}
+
+; The disjoint OR is only reachable through a mask. Annotations on
+; non-arithmetic paths are not relaxed, so the basis is not reused.
+define i8 @disjoint_or_under_mask_basis(i8 noundef %x, i8 noundef %s) {
+; CHECK-LABEL: define i8 @disjoint_or_under_mask_basis(
+; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
+; CHECK-NEXT:    [[O:%.*]] = or disjoint i8 [[X]], 4
+; CHECK-NEXT:    [[K:%.*]] = and i8 [[O]], 124
+; CHECK-NEXT:    [[A0:%.*]] = add nsw i8 [[K]], 1
+; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[A0]], [[S]]
+; CHECK-NEXT:    [[F:%.*]] = freeze i8 [[M0]]
+; CHECK-NEXT:    call void @sink(i8 [[F]])
+; CHECK-NEXT:    [[K1:%.*]] = and i8 [[O]], 124
+; CHECK-NEXT:    [[A1:%.*]] = add i8 [[K1]], 2
+; CHECK-NEXT:    [[M1:%.*]] = mul i8 [[A1]], [[S]]
+; CHECK-NEXT:    ret i8 [[M1]]
+;
+  %o = or disjoint i8 %x, 4
+  %k = and i8 %o, 124
+  %a0 = add nsw i8 %k, 1
+  %m0 = mul i8 %a0, %s
+  %f = freeze i8 %m0
+  call void @sink(i8 %f)
+  %k1 = and i8 %o, 124
+  %a1 = add i8 %k1, 2
+  %m1 = mul i8 %a1, %s
+  ret i8 %m1
+}
