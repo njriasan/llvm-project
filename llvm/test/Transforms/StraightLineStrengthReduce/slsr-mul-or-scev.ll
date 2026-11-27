@@ -10,9 +10,9 @@ define noundef i8 @or_range_through_vector(i8 noundef %x, i8 noundef %s) {
 ; CHECK: %e = extractelement
 ; CHECK-NEXT: -->  %e U: [4,0) S: [4,0)
 ; CHECK-LABEL: Classifying expressions for: @or_range_through_vector
-; CHECK: %o = or disjoint i8 %x, 4
+; CHECK: %o = add i8 %x, 4
 ; CHECK: %e = extractelement
-; CHECK-NEXT: -->  %e U: [4,0) S: [4,0)
+; CHECK-NEXT: -->  %e U: full-set S: full-set
   %o = or disjoint i8 %x, 4
   %v = insertelement <2 x i8> zeroinitializer, i8 %o, i32 0
   %e = extractelement <2 x i8> %v, i32 0
@@ -34,9 +34,9 @@ define i8 @candidate_or_range_through_vector(i8 noundef %x, i8 noundef %u) {
 ; CHECK: %e = extractelement
 ; CHECK-NEXT: -->  %e U: [1,0) S: [1,0)
 ; CHECK-LABEL: Classifying expressions for: @candidate_or_range_through_vector
-; CHECK: %m1 = mul i8 %or, %s
+; CHECK: %m1 = add i8 %m0, %s
 ; CHECK: %e = extractelement
-; CHECK-NEXT: -->  %e U: [1,0) S: [1,0)
+; CHECK-NEXT: -->  %e U: full-set S: full-set
   %a = and i8 %x, 1
   %s = or i8 %u, 1
   %m0 = mul i8 %a, %s

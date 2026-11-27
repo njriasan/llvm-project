@@ -99,6 +99,7 @@
 #include "llvm/Support/DebugCounter.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include <cassert>
 #include <cstdint>
@@ -219,9 +220,15 @@ public:
     // Points to (Y - X) that will be used to rewrite this candidate.
     Value *Delta = nullptr;
 
-    // List of instructions whose poison-generating annotations must be dropped
-    // if this candidate is used as the basis of an executed rewrite.
+    // Instructions to relax when reusing this candidate. Convert ORs to
+    // wrapping ADDs, and drop poison-generating annotations everywhere else.
     SmallVector<Instruction *> DropList;
+
+    // Whether this candidate's multiplicand is an OR modeled as an ADD.
+    bool IsOrBased = false;
+    // Whether the instruction still computes the modeled arithmetic after its
+    // DropList is relaxed. Required before an OR-based rewrite reuses it.
+    bool CanRelaxAnnotationsForOrReuse = true;
 
     /// Cost model: Evaluate the computational efficiency of the candidate.
     ///
@@ -364,7 +371,9 @@ public:
     }
   };
 
-  bool runOnFunction(Function &F);
+  enum class RunResult { Unchanged, Rewritten, RelaxedPoison };
+
+  RunResult runOnFunction(Function &F);
 
 private:
   // Fetch straight-line basis for rewriting C, update C.Basis to point to it,
@@ -399,10 +408,12 @@ private:
   // basis.
   void allocateCandidatesAndFindBasis(Candidate::Kind CT, const SCEV *B,
                                       ConstantInt *Idx, Value *S,
-                                      Instruction *I);
+                                      Instruction *I,
+                                      Instruction *DisjointOr = nullptr);
 
   // Rewrites candidate C with respect to Basis.
-  void rewriteCandidate(const Candidate &C);
+  bool rewriteCandidate(const Candidate &C,
+                        SmallSetVector<Instruction *, 8> &ToRelax);
 
   // Emit code that computes the "bump" from Basis to C.
   static Value *emitBump(const Candidate &Basis, const Candidate &C,
@@ -806,6 +817,12 @@ bool StraightLineStrengthReduce::candidatePredicate(Candidate *Basis,
       !C.isProfitableRewrite(*Delta, Candidate::IndexDelta))
     return false;
 
+  // An OR-based rewrite relies on the basis computing the modeled arithmetic
+  // after its annotations are relaxed.
+  if ((C.IsOrBased || Basis->IsOrBased) &&
+      !Basis->CanRelaxAnnotationsForOrReuse)
+    return false;
+
   // Record delta if none has been found yet, or the new delta is
   // a constant that is better than the existing delta.
   if (!C.Delta || isa<ConstantInt>(Delta)) {
@@ -1060,13 +1077,14 @@ bool StraightLineStrengthReduce::isFoldable(const Candidate &C,
 
 void StraightLineStrengthReduce::allocateCandidatesAndFindBasis(
     Candidate::Kind CT, const SCEV *B, ConstantInt *Idx, Value *S,
-    Instruction *I) {
+    Instruction *I, Instruction *DisjointOr) {
   bool IsSafe = CT != Candidate::GEP ||
                 isSafeToFactorGepIndex(S, cast<GetElementPtrInst>(I), DL);
   // Record the SCEV of S that we may use it as a variable delta.
   // Ensure that we rewrite C with a existing IR that reproduces delta value.
 
   Candidate C(CT, B, Idx, S, I, getAndRecordSCEV(S));
+  C.IsOrBased = DisjointOr != nullptr;
   // If we can fold I into an addressing mode, computing I is likely free or
   // takes only one instruction. So, we don't need to analyze or rewrite it.
   //
@@ -1096,10 +1114,24 @@ void StraightLineStrengthReduce::allocateCandidatesAndFindBasis(
   // doing this early we avoid calling canReuseInstruction repeatedly for the
   // same instruction. The DropList is stored on the Candidate so the flags can
   // be dropped only if this candidate is used by an executed rewrite.
-  if (!Opts.enable_poison_reuse_guard ||
-      SE->canReuseInstruction(SE->getSCEV(I), I, Candidates.back().DropList)) {
-    CandidateDict.add(Candidates.back());
+  Candidate &Stored = Candidates.back();
+  if (Opts.enable_poison_reuse_guard) {
+    // A plain OR can be opaque to SCEV even if we matched it as an ADD.
+    SCEVUse Expr = DisjointOr
+                       ? SE->getMulExpr(SE->getAddExpr(B, SE->getConstant(Idx)),
+                                        C.StrideSCEV)
+                       : SCEVUse(SE->getSCEV(I));
+    ScalarEvolution::DisjointOrReuseInfo OrReuse{DisjointOr};
+    if (!SE->canReuseInstruction(Expr, I, Stored.DropList,
+                                 CT == Candidate::Mul ? &OrReuse : nullptr))
+      return;
+    Stored.CanRelaxAnnotationsForOrReuse = OrReuse.CanRelaxAnnotations;
   }
+  // Preserve the modeled addition even if another rewrite drops the flags
+  // that prove the OR's operands disjoint.
+  if (DisjointOr)
+    Stored.DropList.push_back(DisjointOr);
+  CandidateDict.add(Stored);
 }
 
 void StraightLineStrengthReduce::allocateCandidatesAndFindBasis(
@@ -1155,11 +1187,6 @@ static bool matchesAdd(Value *A, Value *&B, ConstantInt *&C) {
   return match(A, m_c_Add(m_Value(B), m_ConstantInt(C)));
 }
 
-// Returns true if A matches B | C where C is constant.
-static bool matchesOr(Value *A, Value *&B, ConstantInt *&C) {
-  return match(A, m_c_Or(m_Value(B), m_ConstantInt(C)));
-}
-
 void StraightLineStrengthReduce::allocateCandidatesAndFindBasisForMul(
     Value *LHS, Value *RHS, Instruction *I) {
   Value *B = nullptr;
@@ -1168,12 +1195,15 @@ void StraightLineStrengthReduce::allocateCandidatesAndFindBasisForMul(
     // If LHS is in the form of "Base + Index", then I is in the form of
     // "(Base + Index) * RHS".
     allocateCandidatesAndFindBasis(Candidate::Mul, SE->getSCEV(B), Idx, RHS, I);
-  } else if (matchesOr(LHS, B, Idx) && haveNoCommonBitsSet(B, Idx, *DL)) {
+  } else if (auto *Or = dyn_cast<PossiblyDisjointInst>(LHS);
+             Or && match(Or, m_c_Or(m_Value(B), m_ConstantInt(Idx))) &&
+             (Or->isDisjoint() || haveNoCommonBitsSet(B, Idx, *DL))) {
     // If LHS is in the form of "Base | Index" and Base and Index have no common
     // bits set, then
     //   Base | Index = Base + Index
     // and I is thus in the form of "(Base + Index) * RHS".
-    allocateCandidatesAndFindBasis(Candidate::Mul, SE->getSCEV(B), Idx, RHS, I);
+    allocateCandidatesAndFindBasis(Candidate::Mul, SE->getSCEV(B), Idx, RHS, I,
+                                   Or);
   } else {
     // Otherwise, at least try the form (LHS + 0) * RHS.
     ConstantInt *Zero = ConstantInt::get(cast<IntegerType>(I->getType()), 0);
@@ -1340,16 +1370,18 @@ Value *StraightLineStrengthReduce::emitBump(const Candidate &Basis,
   return Bump;
 }
 
-void StraightLineStrengthReduce::rewriteCandidate(const Candidate &C) {
+bool StraightLineStrengthReduce::rewriteCandidate(
+    const Candidate &C, SmallSetVector<Instruction *, 8> &ToRelax) {
   if (!DebugCounter::shouldExecute(StraightLineStrengthReduceCounter))
-    return;
+    return false;
 
   const Candidate &Basis = *C.Basis;
   assert(C.Delta && C.CandidateKind == Basis.CandidateKind &&
          C.hasValidDelta(Basis));
 
   for (Instruction *I : Basis.DropList)
-    I->dropPoisonGeneratingAnnotations();
+    if (ToRelax.insert(I) && !isa<PossiblyDisjointInst>(I))
+      I->dropPoisonGeneratingAnnotations();
 
   IRBuilder<> Builder(C.Ins);
   Value *Bump = emitBump(Basis, C, Builder, DL);
@@ -1397,6 +1429,7 @@ void StraightLineStrengthReduce::rewriteCandidate(const Candidate &C) {
   }
   C.Ins->replaceAllUsesWith(Reduced);
   DeadInstructions.push_back(C.Ins);
+  return true;
 }
 
 bool StraightLineStrengthReduceLegacyPass::runOnFunction(Function &F) {
@@ -1407,10 +1440,12 @@ bool StraightLineStrengthReduceLegacyPass::runOnFunction(Function &F) {
   auto *DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   auto *SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
   const ScalarOptions &Opts = getScalarOptions(F);
-  return StraightLineStrengthReduce(Opts, DL, DT, SE, TTI).runOnFunction(F);
+  return StraightLineStrengthReduce(Opts, DL, DT, SE, TTI).runOnFunction(F) !=
+         StraightLineStrengthReduce::RunResult::Unchanged;
 }
 
-bool StraightLineStrengthReduce::runOnFunction(Function &F) {
+StraightLineStrengthReduce::RunResult
+StraightLineStrengthReduce::runOnFunction(Function &F) {
   LLVM_DEBUG(dbgs() << "SLSR on Function: " << F.getName() << "\n");
   // Traverse the dominator tree in the depth-first order. This order makes sure
   // all bases of a candidate are in Candidates when we process it.
@@ -1428,9 +1463,17 @@ bool StraightLineStrengthReduce::runOnFunction(Function &F) {
 
   // Rewrite candidates in the topological order that rewrites a Candidate
   // always before rewriting its Basis
+  SmallSetVector<Instruction *, 8> ToRelax;
+  bool RewroteOrCandidate = false;
   for (Instruction *I : reverse(SortedCandidateInsts))
     if (Candidate *C = pickRewriteCandidate(I))
-      rewriteCandidate(*C);
+      RewroteOrCandidate |= rewriteCandidate(*C, ToRelax) && C->IsOrBased;
+
+  // Keep candidate operands intact until all rewrites have been emitted.
+  for (Instruction *I : ToRelax)
+    if (isa<PossiblyDisjointInst>(I))
+      ReplaceInstWithInst(
+          I, BinaryOperator::CreateAdd(I->getOperand(0), I->getOperand(1)));
 
   for (auto *DeadIns : DeadInstructions)
     // A dead instruction may be another dead instruction's op,
@@ -1438,7 +1481,7 @@ bool StraightLineStrengthReduce::runOnFunction(Function &F) {
     if (DeadIns->getParent())
       RecursivelyDeleteTriviallyDeadInstructions(DeadIns);
 
-  bool Ret = !DeadInstructions.empty();
+  bool Changed = !DeadInstructions.empty();
   DeadInstructions.clear();
   DependencyGraph.clear();
   RewriteCandidates.clear();
@@ -1447,7 +1490,9 @@ bool StraightLineStrengthReduce::runOnFunction(Function &F) {
   CandidateDict.clear();
   // Then destroy the list
   Candidates.clear();
-  return Ret;
+  if (RewroteOrCandidate || !ToRelax.empty())
+    return RunResult::RelaxedPoison;
+  return Changed ? RunResult::Rewritten : RunResult::Unchanged;
 }
 
 PreservedAnalyses
@@ -1458,12 +1503,17 @@ StraightLineStrengthReducePass::run(Function &F, FunctionAnalysisManager &AM) {
   auto *TTI = &AM.getResult<TargetIRAnalysis>(F);
 
   const ScalarOptions &Opts = getScalarOptions(F);
-  if (!StraightLineStrengthReduce(Opts, DL, DT, SE, TTI).runOnFunction(F))
+  using RunResult = StraightLineStrengthReduce::RunResult;
+  auto Result =
+      StraightLineStrengthReduce(Opts, DL, DT, SE, TTI).runOnFunction(F);
+  if (Result == RunResult::Unchanged)
     return PreservedAnalyses::all();
 
   PreservedAnalyses PA;
   PA.preserveSet<CFGAnalyses>();
-  PA.preserve<ScalarEvolutionAnalysis>();
+  // Poison relaxation can invalidate cached ranges beyond SCEVable users.
+  if (Result != RunResult::RelaxedPoison)
+    PA.preserve<ScalarEvolutionAnalysis>();
   PA.preserve<TargetIRAnalysis>();
   return PA;
 }

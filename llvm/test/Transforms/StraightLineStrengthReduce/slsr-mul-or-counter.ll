@@ -9,8 +9,8 @@ define noundef i8 @shared_or_poison_reuse(i8 noundef %x, i8 noundef %s, i8 nound
 ; FULL-LABEL: define noundef i8 @shared_or_poison_reuse(
 ; FULL-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]], i8 noundef [[S2:%.*]]) {
 ; FULL-NEXT:    [[A:%.*]] = and i8 [[X]], 127
-; FULL-NEXT:    [[B:%.*]] = add nsw i8 [[A]], 1
-; FULL-NEXT:    [[O:%.*]] = or i8 [[B]], -128
+; FULL-NEXT:    [[B:%.*]] = add i8 [[A]], 1
+; FULL-NEXT:    [[O:%.*]] = add i8 [[B]], -128
 ; FULL-NEXT:    [[M0:%.*]] = mul i8 [[O]], [[S]]
 ; FULL-NEXT:    [[F0:%.*]] = freeze i8 [[M0]]
 ; FULL-NEXT:    call void @sink(i8 [[F0]])

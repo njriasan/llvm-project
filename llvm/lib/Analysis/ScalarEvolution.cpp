@@ -4039,7 +4039,8 @@ void ScalarEvolution::getPoisonGeneratingValues(
 
 bool ScalarEvolution::canReuseInstruction(
     const SCEV *S, Instruction *I,
-    SmallVectorImpl<Instruction *> &DropPoisonGeneratingInsts) {
+    SmallVectorImpl<Instruction *> &DropPoisonGeneratingInsts,
+    DisjointOrReuseInfo *OrReuse) {
   // If the instruction cannot be poison, it's always safe to reuse.
   if (programUndefinedIfPoison(I))
     return true;
@@ -4051,15 +4052,21 @@ bool ScalarEvolution::canReuseInstruction(
   SmallPtrSet<const Value *, 8> PoisonVals;
   getPoisonGeneratingValues(PoisonVals, S);
 
-  SmallVector<Value *> Worklist;
-  SmallPtrSet<Value *, 8> Visited;
-  Worklist.push_back(I);
+  SmallVector<std::pair<Value *, bool>> Worklist;
+  SmallPtrSet<Value *, 8> VisitedArithmetic, VisitedNonArithmetic;
+  const Instruction *MatchedOr = OrReuse ? OrReuse->MatchedOr : nullptr;
+  Worklist.emplace_back(I, true);
   unsigned NumVisitedInsts = 0;
   const unsigned InstLimit = std::max<unsigned>(16, S->getExpressionSize());
   while (!Worklist.empty()) {
-    Value *V = Worklist.pop_back_val();
-    if (!Visited.insert(V).second)
+    auto [V, ArithmeticPath] = Worklist.pop_back_val();
+    auto &VisitedOnPath =
+        ArithmeticPath ? VisitedArithmetic : VisitedNonArithmetic;
+    if (!VisitedOnPath.insert(V).second)
       continue;
+
+    if (!ArithmeticPath && V == MatchedOr)
+      OrReuse->CanRelaxAnnotations = false;
 
     // Either the value can't be poison, or the S would also be poison if it
     // is.
@@ -4067,7 +4074,9 @@ bool ScalarEvolution::canReuseInstruction(
       continue;
 
     // Avoid walking large instruction graphs.
-    if (++NumVisitedInsts > InstLimit)
+    bool VisitedOnOtherPath =
+        (ArithmeticPath ? VisitedNonArithmetic : VisitedArithmetic).contains(V);
+    if (!VisitedOnOtherPath && ++NumVisitedInsts > InstLimit)
       return false;
 
     auto *I = dyn_cast<Instruction>(V);
@@ -4076,9 +4085,10 @@ bool ScalarEvolution::canReuseInstruction(
 
     // Disjoint or instructions are interpreted as adds by SCEV. However, we
     // can't replace an arbitrary add with disjoint or, even if we drop the
-    // flag. We would need to convert the or into an add.
+    // flag. We would need to convert the or into an add, which the caller
+    // does only for MatchedOr.
     if (auto *PDI = dyn_cast<PossiblyDisjointInst>(I))
-      if (PDI->isDisjoint())
+      if (PDI->isDisjoint() && I != MatchedOr)
         return false;
 
     // FIXME: Ignore vscale, even though it technically could be poison. Do this
@@ -4092,10 +4102,22 @@ bool ScalarEvolution::canReuseInstruction(
       return false;
 
     // If the instruction can't create poison, we can recurse to its operands.
-    if (I->hasPoisonGeneratingAnnotations())
-      DropPoisonGeneratingInsts.push_back(I);
+    if (I->hasPoisonGeneratingAnnotations()) {
+      if (!ArithmeticPath)
+        OrReuse->CanRelaxAnnotations = false;
+      if (!VisitedOnOtherPath)
+        DropPoisonGeneratingInsts.push_back(I);
+    }
 
-    llvm::append_range(Worklist, I->operands());
+    // A SCEV for a non-arithmetic operation can rely on facts from a poisoned
+    // operand, such as a known zero bit used to simplify a mask. Once those
+    // facts are lost, the modeled expression need not hold.
+    if (OrReuse)
+      ArithmeticPath &= I->getOpcode() == Instruction::Add ||
+                        I->getOpcode() == Instruction::Sub ||
+                        I->getOpcode() == Instruction::Mul || I == MatchedOr;
+    for (Value *Op : I->operands())
+      Worklist.emplace_back(Op, ArithmeticPath);
   }
   return true;
 }

@@ -13,8 +13,8 @@ define noundef i8 @or_nsw_poison_reuse(i8 noundef %x, i8 noundef %s) {
 ; CHECK-LABEL: define noundef i8 @or_nsw_poison_reuse(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
 ; CHECK-NEXT:    [[A:%.*]] = and i8 [[X]], 127
-; CHECK-NEXT:    [[B:%.*]] = add nsw i8 [[A]], 1
-; CHECK-NEXT:    [[O:%.*]] = or i8 [[B]], -128
+; CHECK-NEXT:    [[B:%.*]] = add i8 [[A]], 1
+; CHECK-NEXT:    [[O:%.*]] = add i8 [[B]], -128
 ; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[O]], [[S]]
 ; CHECK-NEXT:    [[F:%.*]] = freeze i8 [[M0]]
 ; CHECK-NEXT:    call void @sink(i8 [[F]])
@@ -37,8 +37,8 @@ define noundef i8 @or_nsw_poison_reuse(i8 noundef %x, i8 noundef %s) {
 define noundef i32 @or_nneg_poison_reuse(i8 noundef %x, i32 noundef %s) {
 ; CHECK-LABEL: define noundef i32 @or_nneg_poison_reuse(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i32 noundef [[S:%.*]]) {
-; CHECK-NEXT:    [[Z:%.*]] = zext nneg i8 [[X]] to i32
-; CHECK-NEXT:    [[O:%.*]] = or i32 [[Z]], 128
+; CHECK-NEXT:    [[Z:%.*]] = zext i8 [[X]] to i32
+; CHECK-NEXT:    [[O:%.*]] = add i32 [[Z]], 128
 ; CHECK-NEXT:    [[M0:%.*]] = mul i32 [[O]], [[S]]
 ; CHECK-NEXT:    [[F:%.*]] = freeze i32 [[M0]]
 ; CHECK-NEXT:    call void @sink32(i32 [[F]])
@@ -91,8 +91,8 @@ define noundef i8 @or_nsw_poison_reuse_nonmul_user(i8 noundef %x, i8 noundef %s)
 ; CHECK-LABEL: define noundef i8 @or_nsw_poison_reuse_nonmul_user(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
 ; CHECK-NEXT:    [[A:%.*]] = and i8 [[X]], 127
-; CHECK-NEXT:    [[B:%.*]] = add nsw i8 [[A]], 1
-; CHECK-NEXT:    [[O:%.*]] = or i8 [[B]], -128
+; CHECK-NEXT:    [[B:%.*]] = add i8 [[A]], 1
+; CHECK-NEXT:    [[O:%.*]] = add i8 [[B]], -128
 ; CHECK-NEXT:    [[F:%.*]] = freeze i8 [[O]]
 ; CHECK-NEXT:    call void @sink(i8 [[F]])
 ; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[O]], [[S]]
@@ -120,8 +120,8 @@ define noundef i8 @or_nsw_poison_reuse_low_bit(i8 noundef %x, i8 noundef %s) {
 ; CHECK-LABEL: define noundef i8 @or_nsw_poison_reuse_low_bit(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
 ; CHECK-NEXT:    [[A:%.*]] = and i8 [[X]], 126
-; CHECK-NEXT:    [[B:%.*]] = add nsw i8 [[A]], 2
-; CHECK-NEXT:    [[O:%.*]] = or i8 [[B]], 1
+; CHECK-NEXT:    [[B:%.*]] = add i8 [[A]], 2
+; CHECK-NEXT:    [[O:%.*]] = add i8 [[B]], 1
 ; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[O]], [[S]]
 ; CHECK-NEXT:    [[F:%.*]] = freeze i8 [[M0]]
 ; CHECK-NEXT:    call void @sink(i8 [[F]])
@@ -143,7 +143,7 @@ define i8 @known_bits_basis(i8 noundef %x, i8 noundef %s) {
 ; CHECK-LABEL: define i8 @known_bits_basis(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
 ; CHECK-NEXT:    [[A:%.*]] = and i8 [[X]], 3
-; CHECK-NEXT:    [[O0:%.*]] = or i8 [[A]], 4
+; CHECK-NEXT:    [[O0:%.*]] = add i8 [[A]], 4
 ; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[O0]], [[S]]
 ; CHECK-NEXT:    call void @sink(i8 [[M0]])
 ; CHECK-NEXT:    [[TMP1:%.*]] = shl i8 [[S]], 2
@@ -164,12 +164,12 @@ define i8 @known_bits_basis(i8 noundef %x, i8 noundef %s) {
 define noundef i8 @disjoint_flag_basis(i8 noundef %x, i8 noundef %s) {
 ; CHECK-LABEL: define noundef i8 @disjoint_flag_basis(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
-; CHECK-NEXT:    [[O0:%.*]] = or disjoint i8 [[X]], 4
+; CHECK-NEXT:    [[O0:%.*]] = add i8 [[X]], 4
 ; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[O0]], [[S]]
 ; CHECK-NEXT:    [[F:%.*]] = freeze i8 [[M0]]
 ; CHECK-NEXT:    call void @sink(i8 [[F]])
-; CHECK-NEXT:    [[O1:%.*]] = add i8 [[X]], 8
-; CHECK-NEXT:    [[M1:%.*]] = mul i8 [[O1]], [[S]]
+; CHECK-NEXT:    [[TMP1:%.*]] = shl i8 [[S]], 2
+; CHECK-NEXT:    [[M1:%.*]] = add i8 [[M0]], [[TMP1]]
 ; CHECK-NEXT:    ret i8 [[M1]]
 ;
   %o0 = or disjoint i8 %x, 4
@@ -185,7 +185,7 @@ define i8 @commuted_or_and_mul(i8 noundef %x, i8 noundef %s) {
 ; CHECK-LABEL: define i8 @commuted_or_and_mul(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
 ; CHECK-NEXT:    [[A:%.*]] = and i8 [[X]], 3
-; CHECK-NEXT:    [[O0:%.*]] = or i8 4, [[A]]
+; CHECK-NEXT:    [[O0:%.*]] = add i8 4, [[A]]
 ; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[S]], [[O0]]
 ; CHECK-NEXT:    call void @sink(i8 [[M0]])
 ; CHECK-NEXT:    [[TMP1:%.*]] = shl i8 [[S]], 2
@@ -397,12 +397,13 @@ define i8 @shared_masked_disjoint(i8 noundef %a) {
 define i16 @or_candidate_masked_basis(i8 noundef %x, i16 noundef %s) {
 ; CHECK-LABEL: define i16 @or_candidate_masked_basis(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i16 noundef [[S:%.*]]) {
+; CHECK-NEXT:    [[Z:%.*]] = zext nneg i8 [[X]] to i16
+; CHECK-NEXT:    [[MASK:%.*]] = and i16 [[Z]], 383
+; CHECK-NEXT:    [[M0:%.*]] = mul i16 [[MASK]], [[S]]
 ; CHECK-NEXT:    [[ZP:%.*]] = zext i8 [[X]] to i16
-; CHECK-NEXT:    [[O:%.*]] = and i16 [[ZP]], 383
+; CHECK-NEXT:    [[O:%.*]] = or i16 [[ZP]], 256
 ; CHECK-NEXT:    [[M1:%.*]] = mul i16 [[O]], [[S]]
-; CHECK-NEXT:    [[TMP1:%.*]] = shl i16 [[S]], 8
-; CHECK-NEXT:    [[M2:%.*]] = add i16 [[M1]], [[TMP1]]
-; CHECK-NEXT:    ret i16 [[M2]]
+; CHECK-NEXT:    ret i16 [[M1]]
 ;
   %z = zext nneg i8 %x to i16
   %mask = and i16 %z, 383
