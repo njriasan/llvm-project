@@ -436,14 +436,12 @@ define <2 x i8> @vector_or(<2 x i8> %x, <2 x i8> %s) {
 define noundef i8 @nested_disjoint(i8 noundef %x, i8 noundef %s) {
 ; CHECK-LABEL: define noundef i8 @nested_disjoint(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
-; CHECK-NEXT:    [[INNER:%.*]] = or disjoint i8 [[X]], 4
-; CHECK-NEXT:    [[OUTER:%.*]] = or disjoint i8 [[INNER]], 8
+; CHECK-NEXT:    [[INNER:%.*]] = add i8 [[X]], 4
+; CHECK-NEXT:    [[OUTER:%.*]] = add i8 [[INNER]], 8
 ; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[OUTER]], [[S]]
 ; CHECK-NEXT:    [[F:%.*]] = freeze i8 [[M0]]
 ; CHECK-NEXT:    call void @sink(i8 [[F]])
-; CHECK-NEXT:    [[SUM:%.*]] = add i8 [[X]], 12
-; CHECK-NEXT:    [[M1:%.*]] = mul i8 [[SUM]], [[S]]
-; CHECK-NEXT:    ret i8 [[M1]]
+; CHECK-NEXT:    ret i8 [[M0]]
 ;
   %inner = or disjoint i8 %x, 4
   %outer = or disjoint i8 %inner, 8
@@ -460,13 +458,12 @@ define noundef i8 @nested_disjoint(i8 noundef %x, i8 noundef %s) {
 define i8 @add_basis_with_disjoint_or(i8 noundef %x, i8 noundef %s) {
 ; CHECK-LABEL: define i8 @add_basis_with_disjoint_or(
 ; CHECK-SAME: i8 noundef [[X:%.*]], i8 noundef [[S:%.*]]) {
-; CHECK-NEXT:    [[O:%.*]] = or disjoint i8 [[X]], 4
-; CHECK-NEXT:    [[A0:%.*]] = add nsw i8 [[O]], 1
+; CHECK-NEXT:    [[O:%.*]] = add i8 [[X]], 4
+; CHECK-NEXT:    [[A0:%.*]] = add i8 [[O]], 1
 ; CHECK-NEXT:    [[M0:%.*]] = mul i8 [[A0]], [[S]]
 ; CHECK-NEXT:    [[F:%.*]] = freeze i8 [[M0]]
 ; CHECK-NEXT:    call void @sink(i8 [[F]])
-; CHECK-NEXT:    [[A1:%.*]] = add i8 [[O]], 2
-; CHECK-NEXT:    [[M1:%.*]] = mul i8 [[A1]], [[S]]
+; CHECK-NEXT:    [[M1:%.*]] = add i8 [[M0]], [[S]]
 ; CHECK-NEXT:    ret i8 [[M1]]
 ;
   %o = or disjoint i8 %x, 4

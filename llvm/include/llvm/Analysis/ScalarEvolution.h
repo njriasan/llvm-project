@@ -1661,8 +1661,8 @@ public:
   /// Check whether it is poison-safe to represent the expression S using the
   /// instruction I. If such a replacement is performed, the poison flags of
   /// instructions in DropPoisonGeneratingInsts must be dropped. If
-  /// OrReuse is supplied, the caller must replace its MatchedOr with a
-  /// wrapping addition. CanRelaxAnnotations reports
+  /// OrReuse is supplied, the caller must replace its MatchedOr and disjoint
+  /// ORs in this list with wrapping additions. CanRelaxAnnotations reports
   /// whether all relaxations are on arithmetic paths to I. An OR-based
   /// rewrite requires this to be true.
   LLVM_ABI bool

@@ -224,7 +224,8 @@ public:
     // wrapping ADDs, and drop poison-generating annotations everywhere else.
     SmallVector<Instruction *> DropList;
 
-    // Whether this candidate's multiplicand is an OR modeled as an ADD.
+    // Whether this candidate models an OR as an ADD, either directly or in
+    // its DropList.
     bool IsOrBased = false;
     // Whether the instruction still computes the modeled arithmetic after its
     // DropList is relaxed. Required before an OR-based rewrite reuses it.
@@ -1131,6 +1132,7 @@ void StraightLineStrengthReduce::allocateCandidatesAndFindBasis(
   // that prove the OR's operands disjoint.
   if (DisjointOr)
     Stored.DropList.push_back(DisjointOr);
+  Stored.IsOrBased |= any_of(Stored.DropList, IsaPred<PossiblyDisjointInst>);
   CandidateDict.add(Stored);
 }
 
