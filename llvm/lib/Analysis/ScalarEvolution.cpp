@@ -4085,11 +4085,10 @@ bool ScalarEvolution::canReuseInstruction(
 
     // Disjoint or instructions are interpreted as adds by SCEV. However, we
     // can't replace an arbitrary add with disjoint or, even if we drop the
-    // flag. We would need to convert the or into an add, which the caller
-    // does only for MatchedOr.
-    if (auto *PDI = dyn_cast<PossiblyDisjointInst>(I))
-      if (PDI->isDisjoint() && I != MatchedOr)
-        return false;
+    // flag. The caller must be able to convert the or into an add.
+    auto *Or = dyn_cast<PossiblyDisjointInst>(I);
+    if (Or && Or->isDisjoint() && !OrReuse)
+      return false;
 
     // FIXME: Ignore vscale, even though it technically could be poison. Do this
     // because SCEV currently assumes it can't be poison. Remove this special
@@ -4115,7 +4114,8 @@ bool ScalarEvolution::canReuseInstruction(
     if (OrReuse)
       ArithmeticPath &= I->getOpcode() == Instruction::Add ||
                         I->getOpcode() == Instruction::Sub ||
-                        I->getOpcode() == Instruction::Mul || I == MatchedOr;
+                        I->getOpcode() == Instruction::Mul ||
+                        (Or && (Or->isDisjoint() || Or == MatchedOr));
     for (Value *Op : I->operands())
       Worklist.emplace_back(Op, ArithmeticPath);
   }
