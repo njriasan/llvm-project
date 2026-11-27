@@ -1653,12 +1653,22 @@ public:
   getPoisonGeneratingValues(SmallPtrSetImpl<const Value *> &Result,
                             const SCEV *S);
 
+  struct DisjointOrReuseInfo {
+    const Instruction *MatchedOr = nullptr;
+    bool CanRelaxAnnotations = true;
+  };
+
   /// Check whether it is poison-safe to represent the expression S using the
   /// instruction I. If such a replacement is performed, the poison flags of
-  /// instructions in DropPoisonGeneratingInsts must be dropped.
-  LLVM_ABI bool canReuseInstruction(
-      const SCEV *S, Instruction *I,
-      SmallVectorImpl<Instruction *> &DropPoisonGeneratingInsts);
+  /// instructions in DropPoisonGeneratingInsts must be dropped. If
+  /// OrReuse is supplied, the caller must replace its MatchedOr with a
+  /// wrapping addition. CanRelaxAnnotations reports
+  /// whether all relaxations are on arithmetic paths to I. An OR-based
+  /// rewrite requires this to be true.
+  LLVM_ABI bool
+  canReuseInstruction(const SCEV *S, Instruction *I,
+                      SmallVectorImpl<Instruction *> &DropPoisonGeneratingInsts,
+                      DisjointOrReuseInfo *OrReuse = nullptr);
 
   class FoldID {
     SCEVUse Op;
